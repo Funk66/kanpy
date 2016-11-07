@@ -3,18 +3,10 @@
 import re
 import json
 import time
-import pickle
 import operator
-from datetime import datetime, timedelta
-
 import requests
+from datetime import datetime
 
-from .settings import conf
-from .logger import log
-
-
-class KanbanError(Exception):
-    """ Kanban error """
 
 
 class Record(dict):
@@ -61,11 +53,11 @@ class ResponseCodes:
 
 
 class Connector(object):
-    def __init__(self, domain, user, password, throttle=0.1):
+    def __init__(self, domain, username, password, throttle=0.1):
         host = 'https://' + domain + '.leankit.com'
         self.base_api_url = host + '/Kanban/Api'
         self.http = requests.sessions.Session()
-        self.http.auth = (user, password)
+        self.http.auth = (username, password)
         self.last_request_time = time.time() - throttle
         self.throttle = throttle
 
@@ -74,7 +66,6 @@ class Connector(object):
         return self.do_request("POST", url, data, handle_errors)
 
     def get(self, url, handle_errors=True):
-        log.debug("GET {}".format(url))
         return self.do_request("GET", url, None, handle_errors)
 
     def do_request(self, action, url, data=None, handle_errors=True):
@@ -101,7 +92,6 @@ class Connector(object):
             raise IOError("Unable to make HTTP request: %s" % e.message)
 
         if request.status_code not in ResponseCodes.SUCCESS_CODES:
-            log.error("Error from Kanban")
             raise IOError('Kanban error %d' % request.status_code)
 
         response = Record(request.json())
@@ -122,8 +112,7 @@ class Converter(object):
 
     def __init__(self, raw_data, board):
         self.board = board
-        if conf['environment'] == 'development':
-            self.raw_data = raw_data
+        self.raw_data = raw_data
         for attr in self.attributes:
             setattr(self, self.prettify_name(attr), raw_data.get(attr, ''))
 
@@ -144,7 +133,7 @@ class Converter(object):
         else:
             return name.upper()
 
-    def bsonify(self):
+    def jsonify(self):
         data = {'LastUpdate': datetime.today()}
         for attr in self.attributes:
             data[attr] = self.raw_data[attr]
@@ -194,17 +183,16 @@ class Card(Converter):
         self.last_move_str = card_dict['LastMove']
         self.last_activity_str = card_dict['LastActivity']
         self.due_date_str = card_dict['DueDate']
-        self.archived = card_dict.get('Archived', False)  # TODO: check for conflicts with Archived attr
+        self.archived = card_dict.get('Archived', False)
         self.history = self.raw_data.get('History', [])
         assert self.id not in self.board.cards, "Attempted to create duplicate card: {}".format(self.id)
         self.board.cards[self.id] = self
-        self._moves_ = []
 
     def __repr__(self):
         return str(self.external_card_id or self.id)
 
-    def bsonify(self):
-        data = super(Card, self).bsonify()
+    def jsonify(self):
+        data = super(Card, self).jsonify()
         dates = ['LastActivity', 'LastMove', 'DateArchived', 'DueDate']
         for date in dates:
           data[date] = getattr(self, self.prettify_name(date))
@@ -222,17 +210,6 @@ class Card(Converter):
 
     def get_comments(self):
         self.comments = self.board.kanban.connector.get("/card/getcomments/{0.board.id}/{0.id}".format(self))['ReplyData'][0]
-
-    @property
-    def creation_date(self):
-        if self.history[0]['Type'] == 'CardCreationEventDTO':
-            return self.date_event(self.history[0])
-        else:
-            for event in self.history:
-                if event['Type'] == 'CardCreationEventDTO':
-                    return datetime.strptime(self.history[0]['DateTime'], '%d/%m/%Y at %I:%M:%S %p')
-            log.debug('No CardCreationEventDTO for card {}'.format(self.id))
-            return self.date_event(self.history[0])
 
     @property
     def due_date(self):
@@ -264,44 +241,6 @@ class Card(Converter):
             return datetime.strptime(self.date_archived_str, '%d/%m/%Y')
         else:
             return ''
-
-    @staticmethod
-    def date_event(event):
-        return datetime.strptime(event['DateTime'], '%d/%m/%Y at %I:%M:%S %p')
-
-    @property
-    def lanes(self):
-        if not self._moves_:
-            assert self.history, "History not available for card {}".format(self.id)
-            previous_time = self.creation_date
-            current_time = None
-            for event in self.history:
-                if event['Type'] == 'CardMoveEventDTO':
-                    current_time = self.date_event(event)
-                    self._moves_.append({'lane': self.board.lanes.get(event['FromLaneId']),
-                                         'in': previous_time,
-                                         'out': current_time})
-                    previous_time = current_time
-            if event['ToLaneId'] not in self.board.lanes:
-                log.warning('Current lane does not exist: {} ({})'.format(event['ToLaneTitle'], event['ToLaneId']))
-            self._moves_.append({'lane': self.board.lanes.get(event['ToLaneId'], self.lane),
-                                 'in': current_time or previous_time,
-                                 'out': None})
-        return self._moves_
-
-    def move(self, lane, position=0):
-        if lane and lane != self.lane.id and self.board.lanes[lane]:
-            url = "/Board/{board}/MoveCard/{card}/Lane/{lane}/Position/{position}" \
-                  "".format(board=self.board.id, card=self.id, lane=lane, position=position)
-            response = self.board.kanban.connector.post(url, data=None)
-            if response.ReplyCode in ResponseCodes.SUCCESS_CODES:
-                log.debug("Card {0.id} moved from {0.lane} to {1}".format(self, self.board.lane(lane)))
-                self.lane.remove_card(self.id)
-                self.lane = self.board.lanes[lane]
-                return response.ReplyData[0]
-            else:
-                raise KanbanError("Moving card {0.id} to {0.lane} failed\n"
-                                  "Error {1}: {2}".format(self, response.ReplyCode, response.ReplyText))
 
 
 class Lane(Converter):
@@ -366,8 +305,8 @@ class Lane(Converter):
             lane = lane.parent
         return id_list
 
-    def bsonify(self):
-        data = super(Lane, self).bsonify()
+    def jsonify(self):
+        data = super(Lane, self).jsonify()
         data['Area'] = self.area
         return data
 
@@ -466,14 +405,13 @@ class Board(Converter):
             for card in self.deck:
                 card.get_history()
         except KeyboardInterrupt:
-            log.warning("Download aborted by the user")
+            pass
 
     def get_card(self, card_id, history=True):
         card_dict = self.kanban.connector.get("/Board/{board_id}/GetCard/{card_id}".format(
                 board_id=str(self.id), card_id=card_id)).ReplyData[0]
 
         if not card_dict:
-            log.warning("Card {} not in server".format(card_id))
             return
 
         assert self.lanes[card_dict['LaneId']], "Lane {} does not exist".format(card_dict['LaneId'])
@@ -505,25 +443,10 @@ class Board(Converter):
 
 
 class Kanban:
-    def __init__(self):
-        self.connection = None
+    def __init__(self, domain, username, password):
+        self.connector = Connector(domain, username, password)
         self.database = None
         self.boards = {}
-        self.board = None
-
-    @property
-    def connector(self):
-        if not self.connection:
-            try:
-                credentials = [conf['kanban'][key] for key in ['domain', 'user', 'password']]
-            except KeyError as key:
-                raise ValueError("Kanban parameter {} not found in configuration file".format(key))
-            self.connection = Connector(*credentials)
-        return self.connection
-
-    def get_boards(self, board_ids, backlog=True, archive=True):
-        for board_id in board_ids:
-            self.get_board(board_id, backlog=backlog, archive=archive)
 
     def get_board(self, board_id, backlog=True, archive=True):
         board_dict = self.connector.get('/Boards/{}'.format(board_id)).ReplyData[0]
@@ -537,6 +460,8 @@ class Kanban:
         """ Downloads a board if a newer version number exists """
         board_dict = self.connector.get('/Board/{}/BoardVersion/{}/GetNewerIfExists'.format(board_id, version)).ReplyData[0]
         if board_dict:
-            self.board = Board(self, board_dict)
-            return self.board
+            self.boards[board_id] = Board(self, board_dict)
+            return True
+        else:
+            return False
 

@@ -9,5 +9,5 @@ setup(
     author_email = 'contact@guillermoguiraoaguilar.com',
     url = 'https://github.com/Funk66/kanpy.git',
     keywords = ['kanban'],
-    install_requires = ['requests', 'pymongo', 'pyyaml']
+    install_requires = ['requests']
 )
