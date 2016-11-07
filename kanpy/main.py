@@ -137,6 +137,8 @@ class Converter(object):
         data = {'LastUpdate': datetime.today()}
         for attr in self.attributes:
             data[attr] = self.raw_data[attr]
+        if self.board:
+            data['BoardId'] = self.board.id
         return data
 
 
