@@ -8,7 +8,7 @@ import requests
 from datetime import datetime
 
 from . import settings
-from . import logger
+from .logger import log
 
 
 class Record(dict):
@@ -68,6 +68,7 @@ class Connector(object):
         return self.do_request("POST", url, data, handle_errors)
 
     def get(self, url, handle_errors=True):
+        log.debugg('GET {}'.format(url))
         return self.do_request("GET", url, None, handle_errors)
 
     def do_request(self, action, url, data=None, handle_errors=True):
@@ -416,6 +417,7 @@ class Board(Converter):
                 board_id=str(self.id), card_id=card_id)).ReplyData[0]
 
         if not card_dict:
+            log.warning('Card {} not in server'.format(card_id))
             return
 
         assert self.lanes[card_dict['LaneId']], "Lane {} does not exist".format(card_dict['LaneId'])
