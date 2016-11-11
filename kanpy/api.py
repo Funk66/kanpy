@@ -7,6 +7,8 @@ import operator
 import requests
 from datetime import datetime
 
+from . import settings
+from . import logger
 
 
 class Record(dict):
@@ -445,8 +447,9 @@ class Board(Converter):
 
 
 class Kanban:
-    def __init__(self, domain, username, password):
-        self.connector = Connector(domain, username, password)
+    def __init__(self):
+        credentials = [conf['kanban'][key] for key in ['domain', 'username', 'password']]
+        self.connector = Connector(*credentials)
         self.database = None
         self.boards = {}
 
