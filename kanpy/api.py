@@ -5,10 +5,13 @@ import json
 import time
 import operator
 import requests
+import logging
 from datetime import datetime
 
 from . import settings
-from .logger import log
+
+
+log = logging.getLogger(__name__)
 
 
 class Record(dict):
@@ -68,13 +71,13 @@ class Connector(object):
         return self.do_request("POST", url, data, handle_errors)
 
     def get(self, url, handle_errors=True):
-        log.debugg('GET {}'.format(url))
         return self.do_request("GET", url, None, handle_errors)
 
     def do_request(self, action, url, data=None, handle_errors=True):
         """ Make an HTTP request to the given url possibly POSTing some data. """
         assert self.http is not None, "HTTP connection should not be None"
         headers = {'Content-type': 'application/json'}
+        log.debug('{} {}'.format(action, url))
 
         # Throttle requests to Leankit to be no more than once per THROTTLE
         # seconds.
@@ -210,6 +213,7 @@ class Card(Converter):
         for event in history:
             event['DateTime'] = datetime.strptime(event['DateTime'], '%d/%m/%Y at %I:%M:%S %p')
             event['Position'] = len(history) - history.index(event)
+            event['BoardId'] = self.board.id
 
         self.history = list(reversed(history))
 
@@ -450,7 +454,7 @@ class Board(Converter):
 
 class Kanban:
     def __init__(self):
-        credentials = [conf['kanban'][key] for key in ['domain', 'username', 'password']]
+        credentials = [settings.kanban[key] for key in ['domain', 'username', 'password']]
         self.connector = Connector(*credentials)
         self.database = None
         self.boards = {}
