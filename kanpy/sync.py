@@ -31,14 +31,17 @@ class Worker:
         return {item['Id']: item for item in db[collection].find(query)}
 
     def reset(self):
-        for collection in self.collections:
+        collections = {'boards': ['Id'], 'lanes': ['Id', 'BoardId'], 'cards': ['Id', 'BoardId'],
+                       'users': ['BoardId'], 'card_types': ['Id', 'BoardId'],
+                       'classes_of_service': ['Id', 'BoardId'], 'events': ['BoardId', 'CardId'] }
+        for collection in collections:
             db[collection].drop()
-            db[collection].create_index([('Id', pymongo.ASCENDING)], unique=True)
-            db[collection].create_index([('BoardId', pymongo.ASCENDING)])
-
-        db.events.drop()
-        db.events.create_index([('CardId', pymongo.ASCENDING), ('BoardId', pymongo.ASCENDING)])
-        db.boards.drop()
+            for index in collections[collection]:
+                if index == 'Id':
+                    db[collection].create_index('Id', unique=True)
+                else:
+                    db[collection].create_index(index)
+        self.boards = dict(zip(settings.kanban['boards'], [None]*len(settings.kanban['boards'])))
 
     def populate(self, board_id):
         log.info('Populating board {}'.format(board_id))
@@ -49,7 +52,9 @@ class Worker:
         for collection in self.collections:
             db[collection].remove({'BoardId': board_id})
             items = [item.jsonify() for item in getattr(board, collection).values()]
-            if items:
+            if len(items) == 1:
+                db[collection].insert(items[0])
+            elif len(items) > 1:
                 db[collection].insert_many(items)
         db.events.remove({'BoardId': board_id})
         events = [event for card in board.cards.values() for event in card.history]
