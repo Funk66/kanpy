@@ -182,6 +182,7 @@ class Card(Converter):
 
     def trt_lane(self, lane, hours=False):
         """ Returns the TRT for a given lane, including the current one
+
         :param int lane: Id number of the lane
         :param bool hours: If True, returns the TRT in working hours
         """
@@ -201,6 +202,7 @@ class Card(Converter):
 
     def trt_station(self, station, hours=False):
         """ Returns the TRT for a given station, including the current one
+
         :param int station: Position of the station
         :param bool hours: If True, returns the TRT in working hours
         """
@@ -297,6 +299,7 @@ class Lane(Converter):
         super(Lane, self).__init__(data)
         self.board = board
         self.station = None
+        self.groups = []
 
     def __repr__(self):
         return self.path
@@ -377,6 +380,16 @@ class Phase(Converter):
         return sum([station.target(card) for station in self.stations])
 
 
+class Group(Converter):
+    def __init__(self, data, board):
+        super(Group, self).__init__(data)
+        self.board = board
+        self.id = self.position
+        self.lanes = [self.board.lanes[lane] for lane in self.lanes]
+        for lane in self.lanes:
+            lane.groups.append(self)
+
+
 class Board(Converter):
     def __init__(self, board_id=None, archive=False):
         # TODO: optionally load archived cards
@@ -390,7 +403,7 @@ class Board(Converter):
         self.cards = {card['Id']: Card(card, self) for card in db.cards.find({'BoardId': board_id})}
         self.stations = {station['Position']: Station(station, self) for station in db.stations.find({'BoardId': board_id})}
         self.phases = {phase['Position']: Phase(phase, self) for phase in db.phases.find({'BoardId': board_id})}
-        self.groups = {group['Position']: Group(phase, self) for group in db.groups.find({'BoardId': board_id})}
+        self.groups = {group['Position']: Group(group, self) for group in db.groups.find({'BoardId': board_id})}
 
         # Load history
         # TODO: history has to be available on Card creation
