@@ -8,6 +8,7 @@ from .database import db
 
 
 today = datetime.datetime.today
+timeutils = officehours.Calculator('8:00', '16:00')
 
 
 class Converter:
@@ -62,7 +63,7 @@ class Card(Converter):
         self._major_changes_ = None
         self._plan_ = {}
         self._estimation_ = {}
-        self._achieved_ = {}
+        self._achieved_ = {'working hours': {}, 'total hours': {}}
 
     def __repr__(self):
         return self.external_card_id or self.id
@@ -114,7 +115,7 @@ class Card(Converter):
         for move in self.moves:
             if move['lane'] and move['lane'].station:
                 if hours:
-                    total += officehours.working_hours(move['in'], move['out'] or today())
+                    total += timeutils.working_hours(move['in'], move['out'] or today())
                 else:
                     total += ((move['out'] or today()) - move['in']).total_seconds() / 3600
         return total
@@ -193,7 +194,7 @@ class Card(Converter):
                 continue
             if move['lane'] and move['lane'].id == lane.id:
                 if hours:
-                    total += officehours.working_hours(move['in'], move['out'] or today())
+                    total += timeutils.working_hours(move['in'], move['out'] or today())
                 else:
                     total += ((move['out'] or today()) - move['in']).total_seconds() / 3600
         return total
@@ -212,6 +213,7 @@ class Card(Converter):
 
     def trt_phase(self, phase, hours=False):
         """ Returns the TRT for a given phase, including the current one
+
         :param int phase: Position of the phase
         :param bool hours: If True, returns the TRT in working hours
         """
@@ -226,7 +228,7 @@ class Card(Converter):
         """ Returns the estimated completion date for the current station """
         if self.station:
             remaining = self.station.target(self) - self.trt_station(self.station.id)
-            return officehours.hours_to_date(today(), remaining)
+            return timeutils.hours_to_date(today(), remaining)
         else:
             return None
 
@@ -237,7 +239,7 @@ class Card(Converter):
             for position in range(1, max(self.board.stations)+1):
                 station = self.board.stations[position]
                 target = station.target(self)
-                ect = officehours.hours_to_date(ect, target)
+                ect = timeutils.hours_to_date(ect, target)
                 self._plan_[position] = {'station': station, 'target': target, 'ect': ect}
         return self._plan_
 
@@ -248,35 +250,37 @@ class Card(Converter):
             if self.station:
                 consumed = self.trt_station(self.station.id, hours=True)
                 target = self.station.target(self)
-                ect = officehours.hours_to_date(today(), target - consumed)
+                ect = timeutils.hours_to_date(today(), target - consumed)
                 self._estimation_[self.station.id] = {'station': self.station, 'target': target, 'ect': ect}
                 for position in range(self.station.id+1, max(self.board.stations)+1):
                     station = self.board.stations[position]
                     target = station.target(self)
-                    ect = officehours.hours_to_date(ect, target)
+                    ect = timeutils.hours_to_date(ect, target)
                     self._estimation_[position] = {'station': station, 'target': target, 'ect': ect}
         return self._estimation_
 
     def achieved(self, hours=False):
         """ Returns a list of completed stations """
-        if not self._achieved_:
+        mode = 'working hours' if hours else 'total hours'
+        data = self._achieved_[mode]
+        if not data:
             for move in self.moves:
-                if move['lane'].station and move['out']:
+                if move['lane'] and move['lane'].station and move['out']:
                     if hours:
-                        trt = officehours.working_hours(move['in'], move['out'])
+                        trt = timeutils.working_hours(move['in'], move['out'])
                     else:
                         trt = (move['out'] - move['in']).total_seconds() / 3600
                     station = move['lane'].station
-                    if station.id in self._achieved_:
-                        self._achieved_[station.id]['trt'] += trt
-                        self._achieved_[station.id]['date'] = move['out']
+                    if station.id in data:
+                        data[station.id]['trt'] += trt
+                        data[station.id]['out'] = move['out']
                     else:
-                        self._achieved_[station.id] = {'trt': trt, 'date': move['out'], 'station': station}
+                        data[station.id] = {'trt': trt, 'in': move['in'], 'out': move['out']}
 
-            if self.station.id in self._achieved_:
-                del self._achieved_[self.station.id]
+            if self.station and self.station.id in data:
+                del data[self.station.id]
 
-        return self._achieved_
+        return data
 
     def ect(self):
         """ Returns the estimated completion time """
@@ -287,10 +291,12 @@ class Card(Converter):
         """ Returns the planned completion time """
         return self._plan_[max(self._plan_)]['ect']
 
+
 class Lane(Converter):
     def __init__(self, data, board):
         super(Lane, self).__init__(data)
         self.board = board
+        self.station = None
 
     def __repr__(self):
         return self.path
@@ -342,7 +348,11 @@ class Station(Converter):
         super(Station, self).__init__(data)
         self.board = board
         self.id = self.position
-        self.lanes = []
+        self.lanes = [self.board.lanes[lane] for lane in self.lanes]
+        self.card = float(self.card)
+        self.size = float(self.size)
+        for lane in self.lanes:
+            lane.station = self
 
     def __repr__(self):
         return self.name
@@ -368,16 +378,19 @@ class Phase(Converter):
 
 
 class Board(Converter):
-    def __init__(self, board_id=None):
-        super(Board, self).__init__(db.boards.find_one({'Id': board_id}))
+    def __init__(self, board_id=None, archive=False):
+        # TODO: optionally load archived cards
+        board_data = db.boards.find_one({'Id': board_id})
+        assert board_data, "No board with id {} found".format(board_id)
+        super(Board, self).__init__(board_data)
         self.card_types = {card_type['Id']: CardType(card_type, self) for card_type in db.card_types.find({'BoardId': board_id})}
         self.classes_of_service = {class_of_service['Id']: ClassOfService(class_of_service, self) for class_of_service in db.classes_of_service.find({'BoardId': board_id})}
         self.users = {user['Id']: User(user, self) for user in db.users.find({'BoardId': board_id})}
         self.lanes = {lane['Id']: Lane(lane, self) for lane in db.lanes.find({'BoardId': board_id})}
         self.cards = {card['Id']: Card(card, self) for card in db.cards.find({'BoardId': board_id})}
         self.stations = {station['Position']: Station(station, self) for station in db.stations.find({'BoardId': board_id})}
-        self.stations_by_id = {s._id: s for s in self.stations.values()}
         self.phases = {phase['Position']: Phase(phase, self) for phase in db.phases.find({'BoardId': board_id})}
+        self.groups = {group['Position']: Group(phase, self) for group in db.groups.find({'BoardId': board_id})}
 
         # Load history
         # TODO: history has to be available on Card creation
@@ -392,15 +405,6 @@ class Board(Converter):
 
         for card_id in self.cards:
             self.cards[card_id].history = sorted(events[card_id], key=lambda event: event['Position'])
-
-        # Get stations right
-        for lane in self.lanes.values():
-            if hasattr(lane, 'station'):
-                lane.station = self.stations_by_id[lane.station]
-                lane.station.lanes.append(lane)
-            else:
-                lane.station = None
-
 
     def __repr__(self):
         return self.title

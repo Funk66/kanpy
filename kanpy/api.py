@@ -456,7 +456,6 @@ class Kanban:
     def __init__(self):
         credentials = [settings.kanban[key] for key in ['domain', 'username', 'password']]
         self.connector = Connector(*credentials)
-        self.database = None
         self.boards = {}
 
     def get_board(self, board_id, backlog=True, archive=True):
