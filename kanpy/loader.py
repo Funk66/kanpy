@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 
 import re
-import datetime
-import officehours
 
 from .database import db
-
-
-today = datetime.datetime.today
-timeutils = officehours.Calculator('8:00', '16:00')
+from .settings import timeutils, today
 
 
 class Converter:
@@ -70,17 +65,11 @@ class Card(Converter):
 
     @property
     def assigned_user(self):
-        if self.assigned_user_id:
-            return self.board.users[self.assigned_user_id]
-        else:
-            return None
+        return self.board.users[self.assigned_user_id] if self.assigned_user_id else None
 
     @property
     def class_of_service(self):
-        if self.class_of_service_id:
-            return self.board.classes_of_service[self.class_of_service_id]
-        else:
-            return None
+        return self.board.classes_of_service[self.class_of_service_id] if self.class_of_service_id else None
 
     @property
     def creation_date(self):
@@ -91,6 +80,10 @@ class Card(Converter):
     @property
     def first_date(self):
         return self.history[0]['DateTime']
+
+    @property
+    def archived(self):
+        return self.lane.main_lane in self.board.archive_lanes
 
     @property
     def moves(self):
@@ -120,7 +113,6 @@ class Card(Converter):
                     total += ((move['out'] or today()) - move['in']).total_seconds() / 3600
         return total
 
-
     @property
     def lane(self):
         """ Returns the current lane """
@@ -147,7 +139,7 @@ class Card(Converter):
         result = []
         for event in self.history:
             if event['Type'] == 'CommentPostEventDTO':
-                result.append({'comment': event['CommentText'], 'date': event['DateTime'], 'user': event['UserName']})
+                result.append({'text': event['CommentText'], 'date': event['DateTime'], 'user': event['UserName']})
         return result
 
     @property
@@ -162,6 +154,7 @@ class Card(Converter):
 
     @property
     def major_changes(self):
+        """ Returns True if the card has been to one of the 'major changes' lanes """
         if not self._major_changes_:
             for move in self.moves:
                 if move['lane'] and 'major changes' in move['lane'].title.lower():
@@ -170,24 +163,25 @@ class Card(Converter):
 
     @property
     def station(self):
+        """ Returns the current station """
         return self.lane.station
 
     @property
     def phase(self):
         """ Returns the current phase """
-        if self.lane.station:
-            return self.lane.station.phase
-        else:
-            return None
+        if self.station:
+            return self.station.phase
 
-    def trt_lane(self, lane, hours=False):
+    def trt_lane(self, lane=None, hours=False):
         """ Returns the TRT for a given lane, including the current one
 
-        :param int lane: Id number of the lane
+        :param int lane: Id number of the lane. Default to current lane
         :param bool hours: If True, returns the TRT in working hours
         """
         total = 0
-        if isinstance(lane, int):
+        if not lane:
+            lane = self.lane
+        elif isinstance(lane, int):
             lane = self.board.lanes[lane]
         major_changes = self.major_changes
         for move in self.moves:
@@ -200,18 +194,21 @@ class Card(Converter):
                     total += ((move['out'] or today()) - move['in']).total_seconds() / 3600
         return total
 
-    def trt_station(self, station, hours=False):
+    def trt_station(self, station=None, hours=False):
         """ Returns the TRT for a given station, including the current one
 
-        :param int station: Position of the station
+        :param int station: Position of the station. Defaults to current station
         :param bool hours: If True, returns the TRT in working hours
         """
-        total = 0
-        if isinstance(station, int):
-            station = self.board.stations[station]
-        for lane in station.lanes:
-            total += self.trt_lane(lane.id, hours)
-        return total
+        if self.station:
+            total = 0
+            if not station:
+                station = self.station
+            elif isinstance(station, int):
+                station = self.board.stations[station]
+            for lane in station.lanes:
+                total += self.trt_lane(lane.id, hours)
+            return total
 
     def trt_phase(self, phase, hours=False):
         """ Returns the TRT for a given phase, including the current one
@@ -229,10 +226,27 @@ class Card(Converter):
     def ect_station(self):
         """ Returns the estimated completion date for the current station """
         if self.station:
-            remaining = self.station.target(self) - self.trt_station(self.station.id)
-            return timeutils.hours_to_date(today(), remaining)
-        else:
-            return None
+            remaining = self.station.target(self) - self.trt_station(self.station.id, hours=True)
+            remaining = max(remaining, 0)
+            return timeutils.due_date(remaining, today())
+
+    def ect_phase(self):
+        """ Returns the estimated completion date for the current phase """
+        if self.station and self.station.phase:
+            remaining = self.station.phase.target(self) - self.trt_phase(self.station.phase.id, hours=True)
+            return timeutils.due_date(remaining, today())
+
+    def target_station(self, station=None):
+        """ Returns the target TRT for a given station
+
+        :param int station: Position of the station. Defaults to current station
+        """
+        if self.station:
+            if not station:
+                station = self.station
+            elif isinstance(station, int):
+                station = self.board.stations[station]
+            return station.target(self)
 
     def plan(self):
         """ Returns all the initially planned completion dates for each station """
@@ -241,7 +255,7 @@ class Card(Converter):
             for position in range(1, max(self.board.stations)+1):
                 station = self.board.stations[position]
                 target = station.target(self)
-                ect = timeutils.hours_to_date(ect, target)
+                ect = timeutils.due_date(target, ect)
                 self._plan_[position] = {'station': station, 'target': target, 'ect': ect}
         return self._plan_
 
@@ -252,12 +266,12 @@ class Card(Converter):
             if self.station:
                 consumed = self.trt_station(self.station.id, hours=True)
                 target = self.station.target(self)
-                ect = timeutils.hours_to_date(today(), target - consumed)
+                ect = timeutils.due_date(target - consumed, today())
                 self._estimation_[self.station.id] = {'station': self.station, 'target': target, 'ect': ect}
                 for position in range(self.station.id+1, max(self.board.stations)+1):
                     station = self.board.stations[position]
                     target = station.target(self)
-                    ect = timeutils.hours_to_date(ect, target)
+                    ect = timeutils.due_date(target, ect)
                     self._estimation_[position] = {'station': station, 'target': target, 'ect': ect}
         return self._estimation_
 
@@ -287,11 +301,11 @@ class Card(Converter):
     def ect(self):
         """ Returns the estimated completion time """
         if self.estimation():
-            return self._estimation_[max(self._estimation_)]['ect']
+            return self.estimation()[max(self.estimation())]['ect']
 
     def pct(self):
         """ Returns the planned completion time """
-        return self._plan_[max(self._plan_)]['ect']
+        return self.plan()[max(self.plan())]['ect']
 
 
 class Lane(Converter):
@@ -352,6 +366,8 @@ class Station(Converter):
         self.board = board
         self.id = self.position
         self.lanes = [self.board.lanes[lane] for lane in self.lanes]
+        self.phase = None
+        self.group = None
         self.card = float(self.card)
         self.size = float(self.size)
         for lane in self.lanes:

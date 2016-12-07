@@ -2,6 +2,8 @@
 
 import yaml
 from os import path
+from datetime import datetime
+import officehours
 
 
 conf_paths = ['conf.yaml', path.expanduser('~/.kanpy')]
@@ -19,4 +21,8 @@ alerts = conf.get('alerts')
 paths = conf.get('paths')
 database = conf.get('database')
 environment = conf.get('environment', 'production')
+
+timeutils = officehours.Calculator(start='8:00', close='16:00')
+timeutils.add_holidays([])  # TODO: move to database
+today = datetime.today
 
