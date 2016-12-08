@@ -83,10 +83,14 @@ class Card(Converter):
 
     @property
     def archived(self):
+        """ Returns True if the card is in one of the archive lnaes """
         return self.lane.main_lane in self.board.archive_lanes
 
-    @property
-    def moves(self):
+    def moves(self, full=False):
+        """ Returns a list of card movements in chronological order.
+
+        :param bool full: if True, includes deleted lanes and current lane
+        """
         if not self._moves_:
             previous_time = self.creation_date or self.first_date
             current_time = None
@@ -95,12 +99,17 @@ class Card(Converter):
             for event in self.history:
                 if event['Type'] == 'CardMoveEventDTO':
                     current_time = event['DateTime']
+                    time = (current_time - previous_time).total_seconds() / 3600
+                    trt = timeutils.working_hours(previous_time, current_time)
                     self._moves_.append({'lane': self.board.lanes.get(event['FromLaneId']),
-                                  'in': previous_time, 'out': current_time})
+                        'in': previous_time, 'out': current_time, 'time': time, 'trt': trt})
                     previous_time = current_time
                     current_lane = self.board.lanes.get(event['ToLaneId'])
             self._moves_.append({'lane': current_lane, 'in': current_time or previous_time, 'out': None})
-        return self._moves_
+        if full:
+            return self._moves_
+        else:
+            return [move for move in self._moves_ if move['lane'] and move['out']]
 
     def trt(self, hours=False):
         """ Total time the card has spent in all stations together """
@@ -116,7 +125,7 @@ class Card(Converter):
     @property
     def lane(self):
         """ Returns the current lane """
-        return self.moves[-1]['lane']
+        return self.moves(True)[-1]['lane']
 
     @property
     def tagset(self):
@@ -359,19 +368,19 @@ class Lane(Converter):
     def path(self):
         return '::'.join(reversed([self.title] + [lane.title for lane in self.ascendants]))
 
+    @property
+    def cards(self):
+        return [card for card in self.board.cards.values() if card.lane == self]
 
-class Station(Converter):
+
+class Bundle(Converter):
     def __init__(self, data, board):
-        super(Station, self).__init__(data)
+        super(Bundle, self).__init__(data)
         self.board = board
         self.id = self.position
         self.lanes = [self.board.lanes[lane] for lane in self.lanes]
-        self.phase = None
-        self.group = None
-        self.card = float(self.card)
-        self.size = float(self.size)
-        for lane in self.lanes:
-            lane.station = self
+        self._cards_ = []
+        self._moves_ = []
 
     def __repr__(self):
         return self.name
@@ -379,29 +388,44 @@ class Station(Converter):
     def target(self, card):
         return self.size * card.size + self.card
 
+    def cards(self, include={}, exclude={}):
+        if not self._cards_:
+            for card in self.board.deck(include, exclude):
+                if card.lane in self.lanes:
+                    self._cards_.append(card)
+        return self._cards_
 
-class Phase(Converter):
+
+class Station(Bundle):
     def __init__(self, data, board):
-        super(Phase, self).__init__(data)
+        super(Station, self).__init__(data, board)
         self.board = board
         self.id = self.position
+        self.phase = None
+        self.group = None
+        self.card = float(self.card)
+        self.size = float(self.size)
+        for lane in self.lanes:
+            lane.station = self
+
+
+class Phase(Bundle):
+    def __init__(self, data, board):
+        super(Phase, self).__init__(data, board)
         self.stations = [board.stations_by_id[s] for s in self.stations]
         for station in self.stations:
             station.phase = self
-
-    def __repr__(self):
-        return self.name
 
     def target(self, card):
         return sum([station.target(card) for station in self.stations])
 
 
-class Group(Converter):
+class Group(Bundle):
     def __init__(self, data, board):
-        super(Group, self).__init__(data)
-        self.board = board
-        self.id = self.position
-        self.lanes = [self.board.lanes[lane] for lane in self.lanes]
+        super(Group, self).__init__(data, board)
+        self.card = float(self.card)
+        self.size = float(self.size)
+        self._stats_ = None
         for lane in self.lanes:
             lane.groups.append(self)
 
@@ -419,7 +443,7 @@ class Board(Converter):
         self.cards = {card['Id']: Card(card, self) for card in db.cards.find({'BoardId': board_id})}
         self.stations = {station['Position']: Station(station, self) for station in db.stations.find({'BoardId': board_id})}
         self.phases = {phase['Position']: Phase(phase, self) for phase in db.phases.find({'BoardId': board_id})}
-        self.groups = {group['Position']: Group(group, self) for group in db.groups.find({'BoardId': board_id})}
+        self.groups = [Group(group, self) for group in db.groups.find({'BoardId': board_id})]
 
         # Load history
         # TODO: history has to be available on Card creation
@@ -437,6 +461,30 @@ class Board(Converter):
 
     def __repr__(self):
         return self.title
+
+    def deck(self, include={}, exclude={}):
+        """ Returns a list of cards matching the a given query.
+        Defaults to all cards.
+
+        :param dict include: attributes of the cards to be included
+        :param dict exclude: attributes of the cards to be excluded
+        """
+        deck = []
+        for card in self.cards.values():
+            match = True
+            for key, value in include.items():
+                if getattr(card, key, None) != value:
+                    match = False
+            if match:
+                deck.append(card)
+
+        for card in deck[:]:
+            for key, value in exclude.items():
+                if getattr(card, key, None) == value:
+                    deck.remove(card)
+                    break
+
+        return deck
 
     @property
     def sorted_lanes(self):
