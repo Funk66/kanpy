@@ -6,6 +6,16 @@ from .database import db
 from .settings import timeutils, today
 
 
+def singleton(method):
+    def wrapper(self):
+        attr = '__' + method.__name__ + '__'
+        if not hasattr(self, attr):
+            result = method(self)
+            setattr(self, attr, result)
+        return getattr(self, attr)
+    return wrapper
+
+
 class Converter:
     def __init__(self, data):
         for attr in data:
@@ -54,8 +64,7 @@ class Card(Converter):
         self.board = board
         self.type = board.card_types[self.type_id]
         self.history = []
-        self._moves_ = []
-        self._major_changes_ = None
+        self._major_changes_ = False
         self._plan_ = {}
         self._estimation_ = {}
         self._achieved_ = {'working hours': {}, 'total hours': {}}
@@ -64,11 +73,18 @@ class Card(Converter):
         return self.external_card_id or self.id
 
     @property
+    def lane(self):
+        """ Returns the current lane """
+        return self.moves(True)[-1]['lane']
+
+    @property
     def assigned_user(self):
+        """ Returns the assigned user, if any """
         return self.board.users[self.assigned_user_id] if self.assigned_user_id else None
 
     @property
     def class_of_service(self):
+        """ Returns the class of service, if any """
         return self.board.classes_of_service[self.class_of_service_id] if self.class_of_service_id else None
 
     @property
@@ -79,6 +95,7 @@ class Card(Converter):
 
     @property
     def first_date(self):
+        """ Date of the first event in the card's history """
         return self.history[0]['DateTime']
 
     @property
@@ -86,31 +103,96 @@ class Card(Converter):
         """ Returns True if the card is in one of the archive lnaes """
         return self.lane.main_lane in self.board.archive_lanes
 
-    def moves(self, full=False):
-        """ Returns a list of card movements in chronological order.
+    @singleton
+    def moves(self):
+        """ Returns a list of card movements in chronological order """
+        previous_time = self.creation_date or self.first_date
+        current_time = None
+        moves = []
+        current_lane = self.board.lanes.get(self.history[0]['ToLaneId'])
+        for event in self.history:
+            if event['Type'] == 'CardMoveEventDTO':
+                current_time = event['DateTime']
+                moves.append({'lane': self.board.lanes.get(event['FromLaneId']),
+                              'in': previous_time, 'out': current_time})
+                previous_time = current_time
+                current_lane = self.board.lanes.get(event['ToLaneId'])
+        moves.append({'lane': current_lane, 'in': current_time or previous_time, 'out': None})
+        return moves
 
-        :param bool full: if True, includes deleted lanes and current lane
-        """
-        if not self._moves_:
-            previous_time = self.creation_date or self.first_date
-            current_time = None
-            self._moves_ = []
-            current_lane = self.board.lanes.get(self.history[0]['ToLaneId'])
-            for event in self.history:
-                if event['Type'] == 'CardMoveEventDTO':
-                    current_time = event['DateTime']
-                    time = (current_time - previous_time).total_seconds() / 3600
-                    trt = timeutils.working_hours(previous_time, current_time)
-                    self._moves_.append({'lane': self.board.lanes.get(event['FromLaneId']),
-                        'in': previous_time, 'out': current_time, 'time': time, 'trt': trt})
-                    previous_time = current_time
-                    current_lane = self.board.lanes.get(event['ToLaneId'])
-            self._moves_.append({'lane': current_lane, 'in': current_time or previous_time, 'out': None})
-        if full:
-            return self._moves_
-        else:
-            return [move for move in self._moves_ if move['lane'] and move['out']]
+    @singleton
+    def timeline(self):
+        """ Returns a list of card movements including the time elapsed among them """
+        timeline = [move for move in self.moves() if move['out']]
+        for move in timeline:
+            move['time'] = (move['out'] - move['in']).total_seconds() / 3600
+            move['trt'] = timeutils.working_hours(move['in'], move['out'])
+        return timeline
 
+    @singleton
+    def lanes(self):
+        """ Returns a dictionary containing the time data for the
+        lanes the card has been through. Doesn't consider the
+        time spent in the current one """
+        lanes = {}
+        for event in self.timeline():
+            lane = event['lane']
+            if lane in lanes:
+                lanes[lane]['trt'] += event['trt']
+                lanes[lane]['time'] += event['time']
+                lanes[lane]['out'] = event['out']
+                lanes[lane]['events'] += 1
+            else:
+                lanes[lane] = {'in': event['in'],
+                               'out': event['out'],
+                               'time': event['time'],
+                               'trt': event['trt'],
+                               'events': 1}
+        return lanes
+
+    @singleton
+    def stations(self):
+        """ Returns a dictionary containing the time data for the
+        stations the card has been through. Doesn't consider the
+        time spent in the current one """
+        stations = {}
+        for lane, data in self.lanes().items():
+            station = lane.station if lane else None
+            if station in stations:
+                stations[station]['trt'] += data['trt']
+                stations[station]['time'] += data['time']
+                stations[station]['out'] = data['out']
+                stations[station]['events'] += data['events']
+            else:
+                stations[station] = {'in': data['in'],
+                                     'out': data['out'],
+                                     'time': data['time'],
+                                     'trt': data['trt'],
+                                     'events': data['events']}
+        return stations
+
+    @singleton
+    def phases(self):
+        """ Returns a dictionary containing the time data for the
+        phases the card has been through. Doesn't consider the
+        time spent in the current one """
+        phases = {}
+        for station, data in self.stations().items():
+            phase = station.phase if station else None
+            if phase in phases:
+                phases[phase]['trt'] += data['trt']
+                phases[phase]['time'] += data['time']
+                phases[phase]['out'] = data['out']
+                phases[phase]['events'] += data['events']
+            else:
+                phases[phase] = {'in': data['in'],
+                                 'out': data['out'],
+                                 'time': data['time'],
+                                 'trt': data['trt'],
+                                 'events': data['events']}
+        return phases
+
+    @singleton
     def trt(self, hours=False):
         """ Total time the card has spent in all stations together """
         total = 0
@@ -121,11 +203,6 @@ class Card(Converter):
                 else:
                     total += ((move['out'] or today()) - move['in']).total_seconds() / 3600
         return total
-
-    @property
-    def lane(self):
-        """ Returns the current lane """
-        return self.moves(True)[-1]['lane']
 
     @property
     def tagset(self):
@@ -154,20 +231,18 @@ class Card(Converter):
     @property
     def start_date(self):
         """ Date in which the card was first moved into a station """
-        if self.major_changes:
-            return self.major_changes
-        else:
-            for move in self.moves:
-                if move['lane'] and move['lane'].station:
-                    return move['in']
+        for move in self.moves:
+            if move['lane'] and move['lane'].station:
+                start_date = move['in']
+            elif move['lane'] and 'major changes' in move['lane'].title.lower():
+                self._major_changes_ = True
+                start_date = move['in']
+        return start_date
 
     @property
     def major_changes(self):
         """ Returns True if the card has been to one of the 'major changes' lanes """
-        if not self._major_changes_:
-            for move in self.moves:
-                if move['lane'] and 'major changes' in move['lane'].title.lower():
-                    self._major_changes_ = move['in']
+        self.start_date
         return self._major_changes_
 
     @property
