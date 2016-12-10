@@ -75,7 +75,7 @@ class Card(Converter):
     @property
     def lane(self):
         """ Returns the current lane """
-        return self.moves(True)[-1]['lane']
+        return self.moves()[-1]['lane']
 
     @property
     def assigned_user(self):
@@ -196,7 +196,7 @@ class Card(Converter):
     def trt(self, hours=False):
         """ Total time the card has spent in all stations together """
         total = 0
-        for move in self.moves:
+        for move in self.moves():
             if move['lane'] and move['lane'].station:
                 if hours:
                     total += timeutils.working_hours(move['in'], move['out'] or today())
@@ -231,7 +231,7 @@ class Card(Converter):
     @property
     def start_date(self):
         """ Date in which the card was first moved into a station """
-        for move in self.moves:
+        for move in self.moves():
             if move['lane'] and move['lane'].station:
                 start_date = move['in']
             elif move['lane'] and 'major changes' in move['lane'].title.lower():
@@ -268,7 +268,7 @@ class Card(Converter):
         elif isinstance(lane, int):
             lane = self.board.lanes[lane]
         major_changes = self.major_changes
-        for move in self.moves:
+        for move in self.moves():
             if major_changes and move['in'] < major_changes:
                 continue
             if move['lane'] and move['lane'].id == lane.id:
@@ -364,7 +364,7 @@ class Card(Converter):
         mode = 'working hours' if hours else 'total hours'
         data = self._achieved_[mode]
         if not data:
-            for move in self.moves:
+            for move in self.moves():
                 if move['lane'] and move['lane'].station and move['out']:
                     if hours:
                         trt = timeutils.working_hours(move['in'], move['out'])
