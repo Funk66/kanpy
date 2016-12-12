@@ -55,7 +55,7 @@ class ClassOfService(Converter):
         self.board = board
 
     def __repr__(self):
-        return self.name
+        return self.title
 
 
 class Card(Converter):
