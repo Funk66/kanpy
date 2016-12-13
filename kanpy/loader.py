@@ -232,7 +232,8 @@ class Card(Converter):
     def start_date(self):
         """ Date in which the card was first moved into a station """
         for move in self.moves():
-            if move['lane'] and move['lane'].station:
+            start_date = None
+            if not start_date and move['lane'] and move['lane'].station:
                 start_date = move['in']
             elif move['lane'] and 'major changes' in move['lane'].title.lower():
                 self._major_changes_ = True
