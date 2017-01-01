@@ -270,7 +270,7 @@ class Card(Converter):
             lane = self.board.lanes[lane]
         major_changes = self.major_changes
         for move in self.moves():
-            if major_changes and move['in'] < major_changes:
+            if move['in'] < self.start_date:
                 continue
             if move['lane'] and move['lane'].id == lane.id:
                 if hours:
